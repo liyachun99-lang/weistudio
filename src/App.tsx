@@ -226,20 +226,31 @@ export default function App() {
       />
 
       {/* 頁尾 */}
-      <footer className="border-t border-slate-900 bg-slate-950/80 py-6 text-center text-xs text-slate-500">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <p>
-            WEIAI Studio • 參考 VOAI.ai 台灣在地化聲優庫與配置 • 支援 GitHub Pages 靜態部署與全端伺服器雙模運作
-          </p>
-          <div className="flex items-center gap-4 text-slate-400">
-            <span>支援 24kHz WAV 高清無損音訊</span>
-            <span>•</span>
-            <button
-              onClick={() => setIsApiKeyModalOpen(true)}
-              className="text-cyan-400 hover:underline"
-            >
-              設定 Gemini API Key
-            </button>
+     {/* 頁尾 */}
+      <footer className="border-t border-slate-800/80 bg-slate-950 py-8 text-center text-xs text-slate-400">
+        <div className="max-w-7xl mx-auto px-4 flex flex-col items-center gap-4">
+          {/* 明顯製作者標示 */}
+          <div className="inline-flex items-center gap-2.5 px-6 py-2.5 rounded-full bg-gradient-to-r from-cyan-950/90 via-slate-900 to-indigo-950/90 border border-cyan-500/50 shadow-xl shadow-cyan-950/50 text-slate-100">
+            <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse"></span>
+            <span className="text-base font-extrabold tracking-wide bg-gradient-to-r from-cyan-300 via-sky-200 to-indigo-200 bg-clip-text text-transparent">
+              本網頁製作者 張桐瑋 2026 版
+            </span>
+          </div>
+
+          <div className="w-full flex flex-col sm:flex-row items-center justify-between gap-3 text-slate-500 pt-2 border-t border-slate-900/80 text-[11px]">
+            <p>
+              WEIAI Studio • 參考 VOAI.ai 台灣在地化聲優庫與配置 • 支援 GitHub Pages 靜態部署與全端伺服器雙模運作
+            </p>
+            <div className="flex items-center gap-4 text-slate-400">
+              <span>支援 24kHz WAV 高清無損音訊</span>
+              <span>•</span>
+              <button
+                onClick={() => setIsApiKeyModalOpen(true)}
+                className="text-cyan-400 hover:underline"
+              >
+                設定 Gemini API Key
+              </button>
+            </div>
           </div>
         </div>
       </footer>
