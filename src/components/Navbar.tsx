@@ -133,7 +133,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
 
             <a
-              href="https://github.com/liyachun99-lang"
+              href="https://github.com/liyachun99-lang/weistudio"
               target="_blank"
               rel="noreferrer"
               className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"

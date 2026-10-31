@@ -45,13 +45,13 @@
 git add .
 git commit -m "feat: 支援 GitHub Pages 靜態部署與客戶端 Gemini TTS"
 git branch -M main
-# 若尚未設定遠端庫，請設定 (依您在 GitHub 建立的倉庫名稱，例如 WEIAI-Studio)：
-# git remote add origin https://github.com/liyachun99-lang/WEIAI-Studio.git
+# 若尚未設定遠端庫，請設定：
+# git remote add origin https://github.com/liyachun99-lang/weistudio.git
 git push -u origin main
 ```
 
 ### 步驟 2：在 GitHub 啟用 Pages 設定
-1. 打開您的 GitHub 儲存庫頁面：`https://github.com/liyachun99-lang/WEIAI-Studio`（或對應專案名）。
+1. 打開您的 GitHub 儲存庫頁面：`https://github.com/liyachun99-lang/weistudio`。
 2. 點擊頂部的 **Settings**（設定）標籤頁。
 3. 在左側選單中點選 **Pages**。
 4. 在 **Build and deployment** 區塊中的 **Source** 下拉選單：
@@ -61,7 +61,7 @@ git push -u origin main
 ### 步驟 3：取得並訪問網頁
 1. 點擊儲存庫頂部的 **Actions** 標籤，等待「Deploy WEIAI Studio to GitHub Pages」顯示綠色勾勾（約 1~2 分鐘）。
 2. 工作流完成後，回到 **Settings -> Pages**，上方即會顯示您的專屬網址：
-   👉 **`https://liyachun99-lang.github.io/WEIAI-Studio/`**
+   👉 **`https://liyachun99-lang.github.io/weistudio/`**
 3. 點擊開啟即可正常瀏覽！
 
 ---

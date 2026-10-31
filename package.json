@@ -1,6 +1,6 @@
 {
-  "name": "weiai-studio",
-  "homepage": "https://liyachun99-lang.github.io/WEIAI-Studio",
+  "name": "weistudio",
+  "homepage": "https://liyachun99-lang.github.io/weistudio",
   "private": true,
   "version": "1.0.0",
   "type": "module",
