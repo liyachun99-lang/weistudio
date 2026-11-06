@@ -149,6 +149,34 @@ app.post('/api/tts/generate', async (req, res) => {
   }
 });
 
+// 音訊拼接輔助函式：無損拼接多個 24kHz 單聲道 16-bit WAV 片段並加入自然交替停頓
+function concatWavsNode(wavBuffers: Buffer[], pauseMs: number = 250): Buffer {
+  if (wavBuffers.length === 0) return Buffer.alloc(0);
+  if (wavBuffers.length === 1) return wavBuffers[0];
+
+  const sampleRate = 24000;
+  const pauseBytes = Math.floor(sampleRate * (pauseMs / 1000)) * 2;
+  const pauseBuffer = Buffer.alloc(pauseBytes);
+
+  const pcmList: Buffer[] = [];
+  wavBuffers.forEach((buf, idx) => {
+    if (buf.length > 44) {
+      pcmList.push(buf.subarray(44));
+      if (idx < wavBuffers.length - 1 && pauseBytes > 0) {
+        pcmList.push(pauseBuffer);
+      }
+    }
+  });
+
+  const allPcm = Buffer.concat(pcmList);
+  const totalDataSize = allPcm.length;
+  const header = Buffer.from(wavBuffers[0].subarray(0, 44));
+  header.writeUInt32LE(36 + totalDataSize, 4);
+  header.writeUInt32LE(totalDataSize, 40);
+
+  return Buffer.concat([header, allPcm]);
+}
+
 // 2. 雙人對談生成 (Multi-Speaker Dialogue / Podcast Studio)
 app.post('/api/tts/generate-dialogue', async (req, res) => {
   try {
@@ -177,67 +205,97 @@ app.post('/api/tts/generate-dialogue', async (req, res) => {
       }
     }
 
-    // 格式化對話內容 parts：系統嚴格設定只寫入對話方塊中的純數據，不要寫入主持人的名字
-    // 底層統一使用 Speaker 1 與 Speaker 2 標準標籤，保證 100% 準確對應選定聲優，杜絕中途跳音
-    const parts = turns.map((turn: any) => {
-      const isSpeaker1 = turn.role === 'speaker1' || turn.speaker === speaker1.name;
-      const speakerLabel = isSpeaker1 ? 'Speaker 1' : 'Speaker 2';
-      const speakerInfo = isSpeaker1 ? speaker1 : speaker2;
-      const rawText = cleanSpeakerPrefix(turn.text || '', speakerInfo.name);
-      const processedTurnText = preprocessScript(rawText);
-      return {
-        text: processedTurnText, // 嚴格只寫入對話方塊數據，絕不寫入主持人姓名
-        speechMetadata: {
-          speaker: speakerLabel, // 嚴格綁定 Speaker 1 或 Speaker 2
-          style: `${speakerInfo.style || '道地台灣口音，親切自然流暢'}。自然對談呼吸感。`,
-        },
-      };
-    });
+    // 針對超過 50 格的超長篇對話，採用並行分批 (Concurrency Limit = 4) 與自動重試
+    // 100% 保證每一格的音色絕對鎖定，既保證速度，又防止瞬間併發超過 API Rate Limit (429)
+    const CONCURRENCY_LIMIT = 4;
+    const buffers: Buffer[] = new Array(turns.length);
 
-    // 調用 gemini-3.8-flash-tts 雙人對話能力
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash-tts',
-      contents: [
-        {
-          role: 'user',
-          parts,
-        },
-      ],
-      config: {
-        responseModalities: ['AUDIO'],
-        speechConfig: {
-          multiSpeakerVoiceConfig: {
-            speakerVoiceConfigs: [
+    async function synthesizeWithRetry(
+      processedTurnText: string,
+      enhancedStyle: string,
+      targetVoice: string,
+      turnIndex: number,
+      maxRetries = 3
+    ): Promise<Buffer> {
+      let lastError: any;
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          const resp = await ai.models.generateContent({
+            model: 'gemini-3.8-flash-tts',
+            contents: [
               {
-                speaker: 'Speaker 1',
-                voiceConfig: {
-                  prebuiltVoiceConfig: { voiceName: voice1 },
-                },
-              },
-              {
-                speaker: 'Speaker 2',
-                voiceConfig: {
-                  prebuiltVoiceConfig: { voiceName: voice2 },
-                },
+                role: 'user',
+                parts: [
+                  {
+                    text: processedTurnText, // 嚴格只寫入純台詞數據，絕不包含主持人姓名
+                    speechMetadata: {
+                      style: enhancedStyle,
+                    },
+                  },
+                ],
               },
             ],
-          },
-        },
-      },
-    });
+            config: {
+              responseModalities: ['AUDIO'],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: { voiceName: targetVoice },
+                },
+              },
+            },
+          });
 
-    const candidatePart = response.candidates?.[0]?.content?.parts?.[0];
-    const base64Audio = candidatePart?.inlineData?.data;
-
-    if (!base64Audio) {
-      return res.status(500).json({
-        error: '雙人對談音訊合成未回傳結果，請檢查說話者標籤與對話內容。',
-      });
+          const audioData = resp.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+          if (audioData) {
+            return Buffer.from(audioData, 'base64');
+          }
+        } catch (err: any) {
+          lastError = err;
+          // 若遭遇短暫頻率限制 (429) 或網路抖動，等待指數避讓後重試
+          await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 800));
+        }
+      }
+      throw new Error(`第 ${turnIndex + 1} 格台詞音訊合成失敗：${lastError?.message || '未回傳音訊'}`);
     }
+
+    for (let i = 0; i < turns.length; i += CONCURRENCY_LIMIT) {
+      const chunk = turns.slice(i, i + CONCURRENCY_LIMIT);
+      await Promise.all(
+        chunk.map(async (turn: any, chunkIdx: number) => {
+          const globalIdx = i + chunkIdx;
+          const isSpeaker1 =
+            turn.role === 'speaker1' || (turn.role !== 'speaker2' && turn.speaker === speaker1.name);
+          const speakerInfo = isSpeaker1 ? speaker1 : speaker2;
+          const targetVoice = isSpeaker1 ? voice1 : voice2;
+
+          const rawText = cleanSpeakerPrefix(turn.text || '', speakerInfo.name);
+          const processedTurnText = preprocessScript(rawText);
+          if (!processedTurnText) return;
+
+          const enhancedStyle = `${speakerInfo.style || '道地台灣口音，親切自然流暢'}。自然對談呼吸感。請使用道地自然流暢的台灣腔調。`;
+
+          const buf = await synthesizeWithRetry(
+            processedTurnText,
+            enhancedStyle,
+            targetVoice,
+            globalIdx
+          );
+          buffers[globalIdx] = buf;
+        })
+      );
+    }
+
+    const validBuffers = buffers.filter((b): b is Buffer => Boolean(b));
+    if (validBuffers.length === 0) {
+      return res.status(400).json({ error: '未能成功生成任何台詞音訊。' });
+    }
+
+    // 無縫拼接所有 WAV 音訊片段，每句之間自動加入 250ms 自然交替呼吸停頓
+    const combinedWavBuffer = concatWavsNode(validBuffers, 250);
 
     return res.json({
       success: true,
-      audioBase64: base64Audio,
+      audioBase64: combinedWavBuffer.toString('base64'),
       mimeType: 'audio/wav',
       turnsCount: turns.length,
       timestamp: Date.now(),

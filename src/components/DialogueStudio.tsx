@@ -75,6 +75,7 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
   ]);
 
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
   const [elapsedTime, setElapsedTime] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
@@ -127,6 +128,25 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
     ]);
   };
 
+  // 批次新增台詞 (支援長篇對話迅速擴充 5 句交替台詞)
+  const handleBatchAddTurns = (count = 5) => {
+    setTurns((prev) => {
+      let currentRole: 'speaker1' | 'speaker2' =
+        prev[prev.length - 1]?.role === 'speaker1' ? 'speaker2' : 'speaker1';
+      const newTurns: DialogueTurn[] = [];
+      const baseTime = Date.now();
+      for (let i = 0; i < count; i++) {
+        newTurns.push({
+          id: String(baseTime + i),
+          role: currentRole,
+          text: '',
+        });
+        currentRole = currentRole === 'speaker1' ? 'speaker2' : 'speaker1';
+      }
+      return [...prev, ...newTurns];
+    });
+  };
+
   // 刪除台詞
   const handleDeleteTurn = (id: string) => {
     if (turns.length <= 1) return;
@@ -154,7 +174,7 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
     );
   };
 
-  // 生成對談音訊 (嚴格限制只提取對話方塊純數據，不要寫入主持人的名字)
+  // 生成對談音訊 (支援 50+ 格超長篇 Podcast，嚴格鎖定主持人一與二聲線)
   const handleGenerateDialogue = async () => {
     // 嚴格清理每一句對白：濾除誤寫入的主持人與說話者名稱，並嚴格標註 role
     const validTurns = turns
@@ -175,6 +195,7 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
     }
 
     setIsGenerating(true);
+    setProgress({ current: 0, total: validTurns.length });
     setErrorMessage(null);
     setElapsedTime(0);
     const startTime = Date.now();
@@ -196,6 +217,9 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
           voiceName: speaker2Voice.geminiVoice,
           style: speaker2Voice.stylePrompt,
         },
+        onProgress: (current, total) => {
+          setProgress({ current, total });
+        },
       });
 
       setGeneratedAudio(result.audioBase64);
@@ -207,7 +231,7 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
         voiceName: `${speaker1Voice.name} (主持人一) & ${speaker2Voice.name} (主持人二)`,
         voiceId: `${speaker1Voice.id}_${speaker2Voice.id}`,
         avatar: speaker1Voice.avatar,
-        accent: '雙人對談 Podcast (嚴格聲線鎖定)',
+        accent: '雙人對談 Podcast (50+ 格長篇聲線嚴格鎖定)',
         model: 'gemini-3.8-flash-tts',
         text: pureDialogueContent, // 嚴格純對話方塊內容數據
         audioBase64: result.audioBase64,
@@ -219,6 +243,7 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
     } finally {
       clearInterval(timerRef.current);
       setIsGenerating(false);
+      setProgress(null);
     }
   };
 
@@ -243,6 +268,13 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-semibold">
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
                 系統嚴格設定：只寫入對話方塊數據，絕不寫入或朗讀主持人名字
+              </span>
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 text-xs font-semibold">
+                <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                超長篇防串音架構：即使對話超過 50 格，每一格聲線依然 100% 嚴格鎖定主持人一與二，絕不跳音！
+              </span>
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-800 border border-slate-700 text-slate-300 text-xs font-mono font-bold">
+                目前共 {turns.length} 格對話
               </span>
             </div>
           </div>
@@ -354,8 +386,14 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
             >
               <div className="flex flex-wrap items-center justify-between gap-3 mb-2.5">
                 <div className="flex items-center gap-2.5">
-                  <span className="w-5 h-5 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center text-xs font-mono font-bold">
-                    {index + 1}
+                  <span
+                    className={`px-2.5 py-0.5 rounded-lg text-xs font-mono font-bold border transition-colors ${
+                      isSpeaker1
+                        ? 'bg-cyan-950/90 text-cyan-300 border-cyan-600/60'
+                        : 'bg-indigo-950/90 text-indigo-300 border-indigo-600/60'
+                    }`}
+                  >
+                    第 {index + 1} 格
                   </span>
 
                   <img
@@ -446,15 +484,51 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
           );
         })}
 
-        {/* 新增台詞按鈕 */}
-        <button
-          onClick={handleAddTurn}
-          className="w-full py-3 rounded-2xl bg-slate-900 border border-dashed border-slate-700 hover:border-cyan-500 hover:bg-slate-850 text-slate-300 hover:text-cyan-300 text-xs font-semibold flex items-center justify-center gap-2 transition-all"
-        >
-          <Plus className="w-4 h-4" />
-          新增對話台詞 (接續下一句)
-        </button>
+        {/* 新增台詞按鈕組 */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <button
+            onClick={handleAddTurn}
+            className="py-3 px-4 rounded-2xl bg-slate-900 border border-dashed border-slate-700 hover:border-cyan-500 hover:bg-slate-850 text-slate-300 hover:text-cyan-300 text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm"
+          >
+            <Plus className="w-4 h-4" />
+            新增 1 句台詞 (接續下一句)
+          </button>
+          <button
+            onClick={() => handleBatchAddTurns(5)}
+            className="py-3 px-4 rounded-2xl bg-slate-900 border border-dashed border-indigo-700/60 hover:border-indigo-400 hover:bg-slate-850 text-indigo-300 hover:text-indigo-200 text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm"
+          >
+            <Users className="w-4 h-4 text-indigo-400" />
+            批次 ＋5 句台詞 (自動交替雙人角色)
+          </button>
+        </div>
       </div>
+
+      {/* 50+ 格長篇對話即時進度條 */}
+      {isGenerating && progress && (
+        <div className="bg-slate-900/90 border border-cyan-500/30 rounded-2xl p-4 space-y-2.5 shadow-lg">
+          <div className="flex items-center justify-between text-xs font-semibold text-slate-200">
+            <span className="flex items-center gap-2 text-cyan-400">
+              <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+              正在生成雙人對談：已完成 {progress.current} / {progress.total} 格 (聲線 100% 嚴格鎖定中)
+            </span>
+            <span className="font-mono text-cyan-300 font-bold">
+              {progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0}%
+            </span>
+          </div>
+          <div className="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden border border-slate-800">
+            <div
+              className="bg-gradient-to-r from-cyan-500 via-sky-400 to-indigo-500 h-2.5 rounded-full transition-all duration-300"
+              style={{
+                width: `${progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0}%`,
+              }}
+            />
+          </div>
+          <p className="text-[11px] text-slate-400 flex items-center justify-between">
+            <span>已啟用長篇防串音併發佇列，即使超過 50 格亦能穩定逐句鎖定音色無損拼接。</span>
+            <span className="font-mono text-slate-500">{elapsedTime.toFixed(1)}s</span>
+          </p>
+        </div>
+      )}
 
       {/* 錯誤訊息 */}
       {errorMessage && (
@@ -493,12 +567,14 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
           {isGenerating ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
-              <span>Gemini 3.8 雙人對談音訊合成中 ({elapsedTime.toFixed(1)}s)...</span>
+              <span>
+                Gemini 3.8 雙人對談合成中 {progress ? `(${progress.current}/${progress.total} 格)` : ''} ({elapsedTime.toFixed(1)}s)...
+              </span>
             </>
           ) : (
             <>
               <Radio className="w-4 h-4 fill-slate-950 text-slate-950" />
-              <span>一鍵生成雙人 Podcast 完整對談音檔</span>
+              <span>一鍵生成雙人 Podcast 完整對談音檔 (共 {turns.length} 格)</span>
             </>
           )}
         </button>

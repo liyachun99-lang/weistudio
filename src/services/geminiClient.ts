@@ -319,17 +319,86 @@ export function cleanSpeakerPrefix(rawText: string, speakerName?: string): strin
 }
 
 /**
+ * 前端無損拼接多個 24kHz 單聲道 16-bit WAV 片段並加入自然交替停頓
+ */
+/**
+ * 前端無損拼接多個 24kHz 單聲道 16-bit WAV 片段並加入自然交替停頓
+ * 支援 50+ 格超長篇音訊無損拼接，使用原生 Blob FileReader 秒速轉為 Base64
+ */
+async function concatWavBuffersClient(base64Wavs: string[], pauseMs: number = 250): Promise<string> {
+  if (base64Wavs.length === 0) return '';
+  if (base64Wavs.length === 1) return base64Wavs[0];
+
+  const buffers = base64Wavs.map((b64) => {
+    const binStr = atob(b64);
+    const bytes = new Uint8Array(binStr.length);
+    for (let i = 0; i < binStr.length; i++) {
+      bytes[i] = binStr.charCodeAt(i);
+    }
+    return bytes;
+  });
+
+  const sampleRate = 24000;
+  const pauseBytesCount = Math.floor(sampleRate * (pauseMs / 1000)) * 2;
+  const pauseBytes = new Uint8Array(pauseBytesCount);
+
+  const pcmList: Uint8Array[] = [];
+  let totalDataLength = 0;
+
+  buffers.forEach((buf, idx) => {
+    if (buf.length > 44) {
+      const pcm = buf.subarray(44);
+      pcmList.push(pcm);
+      totalDataLength += pcm.length;
+      if (idx < buffers.length - 1 && pauseBytesCount > 0) {
+        pcmList.push(pauseBytes);
+        totalDataLength += pauseBytesCount;
+      }
+    }
+  });
+
+  const combined = new Uint8Array(44 + totalDataLength);
+  combined.set(buffers[0].subarray(0, 44), 0);
+
+  const view = new DataView(combined.buffer);
+  view.setUint32(4, 36 + totalDataLength, true);
+  view.setUint32(40, totalDataLength, true);
+
+  let offset = 44;
+  for (const pcm of pcmList) {
+    combined.set(pcm, offset);
+    offset += pcm.length;
+  }
+
+  // 即使超過 50 格 (20MB+ 音訊)，使用原生 Blob FileReader 秒速轉為 Base64
+  return new Promise((resolve, reject) => {
+    const blob = new Blob([combined], { type: 'audio/wav' });
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const dataUrl = reader.result as string;
+      const base64 = dataUrl.split(',')[1] || '';
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
  * 雙人對談生成 (雙模自動切換)
+ * 支援 50 格以上超長篇 Podcast 對談，採用並行分批 (Concurrency Limit = 4) 與自動重試
+ * 100% 嚴格鎖定每一格指定聲優，杜絕串音與變聲
  */
 export async function generateDialogueAudio(params: {
   turns: Array<{ id: string; role?: 'speaker1' | 'speaker2'; speaker?: string; text: string }>;
   speaker1: { name: string; voiceName: string; style: string };
   speaker2: { name: string; voiceName: string; style: string };
+  onProgress?: (completed: number, total: number) => void;
 }): Promise<{
   audioBase64: string;
   isClientSide?: boolean;
 }> {
-  // 1. 嘗試伺服器 API
+  // 1. 優先嘗試伺服器 API (後端並行分批合成與無損拼接)
   try {
     const res = await fetch('/api/tts/generate-dialogue', {
       method: 'POST',
@@ -350,7 +419,7 @@ export async function generateDialogueAudio(params: {
     console.info('Backend dialogue endpoint unavailable, falling back to client-side', backendError);
   }
 
-  // 2. 純前端模式
+  // 2. 純前端模式 (GitHub Pages 靜態環境)
   const clientApiKey = getStoredApiKey();
   if (!clientApiKey) {
     throw new Error(
@@ -375,64 +444,95 @@ export async function generateDialogueAudio(params: {
     }
   }
 
-  // 格式化 parts：使用絕對唯一的 "Speaker 1" 與 "Speaker 2" 作為底層引擎標籤，徹底杜絕串音與變聲
-  const parts = params.turns.map((turn) => {
-    const isSpeaker1 = turn.role === 'speaker1' || (turn.role !== 'speaker2' && turn.speaker === params.speaker1.name);
-    const speakerLabel = isSpeaker1 ? 'Speaker 1' : 'Speaker 2';
-    const speakerInfo = isSpeaker1 ? params.speaker1 : params.speaker2;
+  // 針對超過 50 格的超長篇對話，採用並行分批 (Concurrency Limit = 4) 與指數避讓自動重試
+  const CONCURRENCY_LIMIT = 4;
+  const wavBase64List: string[] = new Array(params.turns.length);
 
-    const cleanTurnText = cleanSpeakerPrefix(turn.text, speakerInfo.name);
-    const processedTurnText = preprocessScript(cleanTurnText);
-
-    return {
-      text: processedTurnText, // 嚴格只寫入純台詞數據，不寫入主持人姓名
-      speechMetadata: {
-        speaker: speakerLabel, // 嚴格綁定標籤 Speaker 1 或 Speaker 2
-        style: `${speakerInfo.style || '道地台灣口音，親切自然流暢'}。自然對談呼吸感。`,
-      },
-    };
-  });
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.8-flash-tts',
-    contents: [
-      {
-        role: 'user',
-        parts,
-      },
-    ],
-    config: {
-      responseModalities: ['AUDIO'],
-      speechConfig: {
-        multiSpeakerVoiceConfig: {
-          speakerVoiceConfigs: [
+  async function synthesizeWithRetryClient(
+    processedTurnText: string,
+    enhancedStyle: string,
+    targetVoice: string,
+    turnIndex: number,
+    maxRetries = 3
+  ): Promise<string> {
+    let lastError: any;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const resp = await ai.models.generateContent({
+          model: 'gemini-3.8-flash-tts',
+          contents: [
             {
-              speaker: 'Speaker 1',
-              voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: voice1 },
-              },
-            },
-            {
-              speaker: 'Speaker 2',
-              voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: voice2 },
-              },
+              role: 'user',
+              parts: [
+                {
+                  text: processedTurnText, // 嚴格只寫入純台詞數據，絕不包含主持人姓名
+                  speechMetadata: {
+                    style: enhancedStyle,
+                  },
+                },
+              ],
             },
           ],
-        },
-      },
-    },
-  });
-
-  const candidatePart = response.candidates?.[0]?.content?.parts?.[0];
-  const base64Audio = candidatePart?.inlineData?.data;
-
-  if (!base64Audio) {
-    throw new Error('雙人對談音訊合成未回傳結果，請檢查說話者標籤與對話內容。');
+          config: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: targetVoice },
+              },
+            },
+          },
+        });
+        const audioData = resp.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        if (audioData) return audioData;
+      } catch (err: any) {
+        lastError = err;
+        await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 800));
+      }
+    }
+    throw new Error(`第 ${turnIndex + 1} 格台詞音訊合成失敗：${lastError?.message || '未回傳音訊'}`);
   }
 
+  let completedCount = 0;
+  for (let i = 0; i < params.turns.length; i += CONCURRENCY_LIMIT) {
+    const chunk = params.turns.slice(i, i + CONCURRENCY_LIMIT);
+    await Promise.all(
+      chunk.map(async (turn, chunkIdx) => {
+        const globalIdx = i + chunkIdx;
+        const isSpeaker1 =
+          turn.role === 'speaker1' || (turn.role !== 'speaker2' && turn.speaker === params.speaker1.name);
+        const speakerInfo = isSpeaker1 ? params.speaker1 : params.speaker2;
+        const targetVoice = isSpeaker1 ? voice1 : voice2;
+
+        const cleanTurnText = cleanSpeakerPrefix(turn.text, speakerInfo.name);
+        const processedTurnText = preprocessScript(cleanTurnText);
+        if (!processedTurnText) return;
+
+        const enhancedStyle = `${speakerInfo.style || '道地台灣口音，親切自然流暢'}。自然對談呼吸感。請使用道地自然流暢的台灣腔調。`;
+
+        const audioData = await synthesizeWithRetryClient(
+          processedTurnText,
+          enhancedStyle,
+          targetVoice,
+          globalIdx
+        );
+        wavBase64List[globalIdx] = audioData;
+        completedCount++;
+        if (params.onProgress) {
+          params.onProgress(completedCount, params.turns.length);
+        }
+      })
+    );
+  }
+
+  const validWavs = wavBase64List.filter((b): b is string => Boolean(b));
+  if (validWavs.length === 0) {
+    throw new Error('未能成功生成任何台詞音訊。');
+  }
+
+  const combinedBase64 = await concatWavBuffersClient(validWavs, 250);
+
   return {
-    audioBase64: base64Audio,
+    audioBase64: combinedBase64,
     isClientSide: true,
   };
 }
