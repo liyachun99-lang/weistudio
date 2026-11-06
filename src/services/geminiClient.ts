@@ -312,8 +312,8 @@ export function cleanSpeakerPrefix(rawText: string, speakerName?: string): strin
     cleaned = cleaned.replace(speakerRegex, '');
   }
 
-  // 通用過濾：過濾開頭的角色名稱標籤如「主持人：」、「來賓：」、「Speaker 1:」等
-  cleaned = cleaned.replace(/^(?:主持人|來賓|嘉賓|說話者|說話人|訪談者|受訪者|Speaker\s*\d*|[A-Za-z0-9_\u4e00-\u9fa5]{1,10})\s*[：:]\s*/i, '');
+  // 通用過濾：過濾開頭的角色名稱標籤如「主持人1：」、「主持人一：」、「主持人：」、「來賓：」、「Speaker 1:」等
+  cleaned = cleaned.replace(/^(?:主持人[一二1-9]?|來賓|嘉賓|說話者[一二1-9]?|說話人|訪談者|受訪者|Speaker\s*\d*|[A-Za-z0-9_\u4e00-\u9fa5]{1,10})\s*[：:]\s*/i, '');
   
   return cleaned.trim();
 }
@@ -322,7 +322,7 @@ export function cleanSpeakerPrefix(rawText: string, speakerName?: string): strin
  * 雙人對談生成 (雙模自動切換)
  */
 export async function generateDialogueAudio(params: {
-  turns: Array<{ id: string; speaker: string; text: string }>;
+  turns: Array<{ id: string; role?: 'speaker1' | 'speaker2'; speaker?: string; text: string }>;
   speaker1: { name: string; voiceName: string; style: string };
   speaker2: { name: string; voiceName: string; style: string };
 }): Promise<{
@@ -362,16 +362,32 @@ export async function generateDialogueAudio(params: {
     apiKey: clientApiKey,
   });
 
+  // 確保主持人一與主持人二的聲音嚴格綁定，若音色代碼相同則自動指定鮮明對比音色
+  let voice1 = params.speaker1.voiceName || 'Puck';
+  let voice2 = params.speaker2.voiceName || 'Kore';
+  if (voice1.toLowerCase() === voice2.toLowerCase()) {
+    const femaleVoices = ['Kore', 'Aoede', 'Zephyr', 'Leda'];
+    const maleVoices = ['Puck', 'Fenrir', 'Orpheus', 'Charon'];
+    if (femaleVoices.includes(voice1)) {
+      voice2 = femaleVoices.find((v) => v !== voice1) || 'Aoede';
+    } else {
+      voice2 = maleVoices.find((v) => v !== voice1) || 'Fenrir';
+    }
+  }
+
+  // 格式化 parts：使用絕對唯一的 "Speaker 1" 與 "Speaker 2" 作為底層引擎標籤，徹底杜絕串音與變聲
   const parts = params.turns.map((turn) => {
-    // 嚴格過濾對話文字：只提取對話方塊中的純數據，絕不包含主持人和說話者的名字
-    const cleanTurnText = cleanSpeakerPrefix(turn.text, turn.speaker);
-    const processedTurnText = preprocessScript(cleanTurnText);
-    const isSpeaker1 = turn.speaker === params.speaker1.name;
+    const isSpeaker1 = turn.role === 'speaker1' || (turn.role !== 'speaker2' && turn.speaker === params.speaker1.name);
+    const speakerLabel = isSpeaker1 ? 'Speaker 1' : 'Speaker 2';
     const speakerInfo = isSpeaker1 ? params.speaker1 : params.speaker2;
+
+    const cleanTurnText = cleanSpeakerPrefix(turn.text, speakerInfo.name);
+    const processedTurnText = preprocessScript(cleanTurnText);
+
     return {
-      text: processedTurnText, // 嚴格只寫入對話方塊中的數據，不要寫入主持人的名字
+      text: processedTurnText, // 嚴格只寫入純台詞數據，不寫入主持人姓名
       speechMetadata: {
-        speaker: turn.speaker,
+        speaker: speakerLabel, // 嚴格綁定標籤 Speaker 1 或 Speaker 2
         style: `${speakerInfo.style || '道地台灣口音，親切自然流暢'}。自然對談呼吸感。`,
       },
     };
@@ -391,15 +407,15 @@ export async function generateDialogueAudio(params: {
         multiSpeakerVoiceConfig: {
           speakerVoiceConfigs: [
             {
-              speaker: params.speaker1.name,
+              speaker: 'Speaker 1',
               voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: params.speaker1.voiceName || 'Puck' },
+                prebuiltVoiceConfig: { voiceName: voice1 },
               },
             },
             {
-              speaker: params.speaker2.name,
+              speaker: 'Speaker 2',
               voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: params.speaker2.voiceName || 'Kore' },
+                prebuiltVoiceConfig: { voiceName: voice2 },
               },
             },
           ],

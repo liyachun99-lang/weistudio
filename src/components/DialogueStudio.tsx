@@ -19,7 +19,7 @@ import { generateDialogueAudio, cleanSpeakerPrefix } from '../services/geminiCli
 
 interface DialogueTurn {
   id: string;
-  speaker: string;
+  role: 'speaker1' | 'speaker2';
   text: string;
 }
 
@@ -50,25 +50,26 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
     VOAI_VOICES.find((v) => v.id === 'xiao-qing') || VOAI_VOICES[0]
   );
 
+  // 嚴格綁定 role: 'speaker1' (主持人一) 與 'speaker2' (主持人二)，不以名稱字串作為鍵值
   const [turns, setTurns] = useState<DialogueTurn[]>([
     {
       id: '1',
-      speaker: speaker1Voice.name,
+      role: 'speaker1',
       text: '哈囉大家！歡迎收聽科技漫步。<breath> 今天非常榮幸邀請到資深科技主播曉晴，來跟我們聊聊 Gemini 3.8 的最新語音黑科技！',
     },
     {
       id: '2',
-      speaker: speaker2Voice.name,
+      role: 'speaker2',
       text: '奕辰你好，各位聽眾朋友大家好！|yeah| 這次的新模型真的很讓人驚豔，特別是在台灣在地腔調的抑揚頓挫上，表現得極為細膩。',
     },
     {
       id: '3',
-      speaker: speaker1Voice.name,
+      role: 'speaker1',
       text: '沒錯！<laugh> 我之前試聽的時候，連那個輕微的吸氣聲跟語助詞都超逼真，根本分不出來是不是真人錄的耶！',
     },
     {
       id: '4',
-      speaker: speaker2Voice.name,
+      role: 'speaker2',
       text: '這就是所謂的語音情感建模。|mhm| 不僅是字詞的發音，連對話中的呼吸節奏與情緒共鳴，都能被精準捕捉呈現出來。',
     },
   ]);
@@ -80,43 +81,47 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
 
   const timerRef = useRef<any>(null);
 
-  // 載入預設對白劇本
+  // 載入預設對白劇本：動態匹配雙人聲優並嚴格鎖定 role
   const handleLoadSample = (index: number) => {
     const sample = SAMPLE_DIALOGUES[index];
-    if (!sample) return;
+    if (!sample || !sample.turns || sample.turns.length === 0) return;
 
-    // 比對說話者聲優
-    if (index === 0) {
-      const v1 = VOAI_VOICES.find((v) => v.name === '奕辰') || speaker1Voice;
-      const v2 = VOAI_VOICES.find((v) => v.name === '曉晴') || speaker2Voice;
-      setSpeaker1Voice(v1);
-      setSpeaker2Voice(v2);
-    } else {
-      const v1 = VOAI_VOICES.find((v) => v.name === '佳玲') || speaker1Voice;
-      const v2 = VOAI_VOICES.find((v) => v.name === '美玉阿姨') || speaker2Voice;
-      setSpeaker1Voice(v1);
-      setSpeaker2Voice(v2);
-    }
+    const sampleSpeaker1Name = sample.turns[0].speaker;
+    const sampleSpeaker2Turn = sample.turns.find((t) => t.speaker !== sampleSpeaker1Name);
+    const sampleSpeaker2Name = sampleSpeaker2Turn ? sampleSpeaker2Turn.speaker : '';
+
+    const v1 =
+      VOAI_VOICES.find((v) => v.name === sampleSpeaker1Name || sampleSpeaker1Name.includes(v.name)) ||
+      speaker1Voice;
+    const v2 =
+      (sampleSpeaker2Name
+        ? VOAI_VOICES.find(
+            (v) => v.name === sampleSpeaker2Name || sampleSpeaker2Name.includes(v.name)
+          )
+        : null) || speaker2Voice;
+
+    setSpeaker1Voice(v1);
+    setSpeaker2Voice(v2);
 
     setTurns(
       sample.turns.map((t, i) => ({
         id: String(i + 1),
-        speaker: t.speaker,
-        text: t.text,
+        role: t.speaker === sampleSpeaker1Name ? 'speaker1' : 'speaker2',
+        text: cleanSpeakerPrefix(t.text, t.speaker),
       }))
     );
   };
 
-  // 新增台詞
+  // 新增台詞：依據上一句的身份嚴格自動交替主持人
   const handleAddTurn = () => {
     const lastTurn = turns[turns.length - 1];
-    const nextSpeaker =
-      lastTurn?.speaker === speaker1Voice.name ? speaker2Voice.name : speaker1Voice.name;
+    const nextRole: 'speaker1' | 'speaker2' =
+      lastTurn?.role === 'speaker1' ? 'speaker2' : 'speaker1';
     setTurns((prev) => [
       ...prev,
       {
         id: String(Date.now()),
-        speaker: nextSpeaker,
+        role: nextRole,
         text: '',
       },
     ]);
@@ -135,10 +140,10 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
     );
   };
 
-  // 修改說話者
-  const handleSpeakerChange = (id: string, newSpeaker: string) => {
+  // 嚴格切換對話框角色：保證只在主持人一與主持人二之間切換
+  const handleRoleChange = (id: string, newRole: 'speaker1' | 'speaker2') => {
     setTurns((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, speaker: newSpeaker } : t))
+      prev.map((t) => (t.id === id ? { ...t, role: newRole } : t))
     );
   };
 
@@ -151,12 +156,17 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
 
   // 生成對談音訊 (嚴格限制只提取對話方塊純數據，不要寫入主持人的名字)
   const handleGenerateDialogue = async () => {
-    // 嚴格清理每一句對白：濾除誤寫入的主持人與說話者名稱
+    // 嚴格清理每一句對白：濾除誤寫入的主持人與說話者名稱，並嚴格標註 role
     const validTurns = turns
-      .map((t) => ({
-        ...t,
-        text: cleanSpeakerPrefix(t.text, t.speaker),
-      }))
+      .map((t) => {
+        const host = t.role === 'speaker1' ? speaker1Voice : speaker2Voice;
+        return {
+          id: t.id,
+          role: t.role,
+          speaker: host.name,
+          text: cleanSpeakerPrefix(t.text, host.name),
+        };
+      })
       .filter((t) => t.text.trim().length > 0);
 
     if (validTurns.length === 0) {
@@ -194,10 +204,10 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
       const pureDialogueContent = validTurns.map((t) => t.text).join(' ');
 
       onSaveToHistory({
-        voiceName: `${speaker1Voice.name} & ${speaker2Voice.name}`,
+        voiceName: `${speaker1Voice.name} (主持人一) & ${speaker2Voice.name} (主持人二)`,
         voiceId: `${speaker1Voice.id}_${speaker2Voice.id}`,
         avatar: speaker1Voice.avatar,
-        accent: '雙人對談 Podcast',
+        accent: '雙人對談 Podcast (嚴格聲線鎖定)',
         model: 'gemini-3.8-flash-tts',
         text: pureDialogueContent, // 嚴格純對話方塊內容數據
         audioBase64: result.audioBase64,
@@ -330,53 +340,55 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
       {/* 對話輪次列表 */}
       <div className="space-y-3">
         {turns.map((turn, index) => {
-          const isSpeaker1 = turn.speaker === speaker1Voice.name;
+          const isSpeaker1 = turn.role === 'speaker1';
           const currentActor = isSpeaker1 ? speaker1Voice : speaker2Voice;
 
           return (
             <div
               key={turn.id}
-              className={`bg-slate-900/90 border rounded-2xl p-4 transition-all ${
+              className={`border rounded-2xl p-4 transition-all ${
                 isSpeaker1
-                  ? 'border-cyan-500/30 bg-slate-900/90'
-                  : 'border-indigo-500/30 bg-slate-900/70'
+                  ? 'border-cyan-500/40 bg-slate-900/95 shadow-md shadow-cyan-950/20'
+                  : 'border-indigo-500/40 bg-slate-900/80 shadow-md shadow-indigo-950/20'
               }`}
             >
-              <div className="flex items-center justify-between gap-3 mb-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-2.5">
                 <div className="flex items-center gap-2.5">
-                  <span className="w-5 h-5 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center text-xs font-mono">
+                  <span className="w-5 h-5 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center text-xs font-mono font-bold">
                     {index + 1}
                   </span>
 
                   <img
                     src={currentActor.avatar}
-                    alt={turn.speaker}
-                    className="w-7 h-7 rounded-lg object-cover"
+                    alt={currentActor.name}
+                    className="w-7 h-7 rounded-lg object-cover border border-slate-700"
                   />
 
-                  {/* 切換說話者按鈕 */}
+                  {/* 嚴格角色鎖定切換按鈕 */}
                   <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
                     <button
                       type="button"
-                      onClick={() => handleSpeakerChange(turn.id, speaker1Voice.name)}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
-                        turn.speaker === speaker1Voice.name
-                          ? 'bg-cyan-600 text-white font-semibold'
-                          : 'text-slate-400 hover:text-white'
+                      onClick={() => handleRoleChange(turn.id, 'speaker1')}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                        isSpeaker1
+                          ? 'bg-cyan-600 text-white shadow-md shadow-cyan-600/30'
+                          : 'text-slate-400 hover:text-white hover:bg-slate-850'
                       }`}
                     >
-                      {speaker1Voice.name}
+                      <span className="w-1.5 h-1.5 rounded-full bg-cyan-300"></span>
+                      <span>主持人 1：{speaker1Voice.name}</span>
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleSpeakerChange(turn.id, speaker2Voice.name)}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
-                        turn.speaker === speaker2Voice.name
-                          ? 'bg-indigo-600 text-white font-semibold'
-                          : 'text-slate-400 hover:text-white'
+                      onClick={() => handleRoleChange(turn.id, 'speaker2')}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                        !isSpeaker1
+                          ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                          : 'text-slate-400 hover:text-white hover:bg-slate-850'
                       }`}
                     >
-                      {speaker2Voice.name}
+                      <span className="w-1.5 h-1.5 rounded-full bg-indigo-300"></span>
+                      <span>主持人 2：{speaker2Voice.name}</span>
                     </button>
                   </div>
                 </div>
@@ -421,13 +433,13 @@ export const DialogueStudio: React.FC<DialogueStudioProps> = ({
                 value={turn.text}
                 onChange={(e) => handleTextChange(turn.id, e.target.value)}
                 onBlur={(e) => {
-                  const cleaned = cleanSpeakerPrefix(e.target.value, turn.speaker);
+                  const cleaned = cleanSpeakerPrefix(e.target.value, currentActor.name);
                   if (cleaned !== e.target.value) {
                     handleTextChange(turn.id, cleaned);
                   }
                 }}
                 rows={2}
-                placeholder={`對話方塊純文字數據（系統已嚴格設定：僅輸入台詞，不要寫入 ${turn.speaker} 的名字）...`}
+                placeholder={`對話方塊純文字數據（系統已嚴格設定：僅輸入台詞，不要寫入 ${currentActor.name} 的名字）...`}
                 className="w-full bg-slate-950/80 border border-slate-800 rounded-xl p-3 text-xs sm:text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500 leading-relaxed font-sans resize-none"
               />
             </div>
