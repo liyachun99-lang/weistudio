@@ -1,0 +1,8 @@
+{
+  "name": "20261031 - VOAI Studio - Gemini 3.8 台灣在地化 AI 聲優與文字轉語音平台",
+  "description": "參考 VOAI.ai 聲優庫與功能配置，基於 Gemini 3.8 TTS 打造的高擬真文字轉語音工作台，支援台灣腔調、多情境聲優、自訂情緒風格、語氣標籤與雙人對話生成。",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
