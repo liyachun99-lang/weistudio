@@ -325,7 +325,7 @@ export function cleanSpeakerPrefix(rawText: string, speakerName?: string): strin
  * 前端無損拼接多個 24kHz 單聲道 16-bit WAV 片段並加入自然交替停頓
  * 支援 50+ 格超長篇音訊無損拼接，使用原生 Blob FileReader 秒速轉為 Base64
  */
-async function concatWavBuffersClient(base64Wavs: string[], pauseMs: number = 250): Promise<string> {
+export async function concatWavBuffersClient(base64Wavs: string[], pauseMs: number = 250): Promise<string> {
   if (base64Wavs.length === 0) return '';
   if (base64Wavs.length === 1) return base64Wavs[0];
 
